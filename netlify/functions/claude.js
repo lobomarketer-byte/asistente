@@ -13,32 +13,63 @@ exports.handler = async function(event, context) {
   try {
     const apiKey = event.headers['x-api-key'] || event.headers['X-Api-Key'];
 
-    if (!apiKey || !apiKey.startsWith('sk-ant-')) {
+    if (!apiKey) {
       return {
         statusCode: 400,
         headers,
-        body: JSON.stringify({ error: { message: 'API key inválida. Debe empezar con sk-ant-' } })
+        body: JSON.stringify({ error: { message: 'API key no proporcionada' } })
       };
     }
 
     const body = JSON.parse(event.body);
 
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(body)
-    });
+    // Convertir formato Claude a formato Gemini
+    const systemPrompt = body.system || '';
+    const messages = body.messages || [];
+
+    const geminiContents = messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }]
+    }));
+
+    const geminiBody = {
+      system_instruction: systemPrompt ? { parts: [{ text: systemPrompt }] } : undefined,
+      contents: geminiContents,
+      generationConfig: {
+        maxOutputTokens: 600,
+        temperature: 0.7
+      }
+    };
+
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(geminiBody)
+      }
+    );
 
     const data = await response.json();
 
+    if (data.error) {
+      return {
+        statusCode: 400,
+        headers,
+        body: JSON.stringify({ error: { message: data.error.message } })
+      };
+    }
+
+    // Convertir respuesta Gemini a formato Claude para que el frontend no cambie
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || 'Sin respuesta';
+    const claudeFormat = {
+      content: [{ type: 'text', text }]
+    };
+
     return {
-      statusCode: response.status,
+      statusCode: 200,
       headers,
-      body: JSON.stringify(data)
+      body: JSON.stringify(claudeFormat)
     };
 
   } catch (err) {
